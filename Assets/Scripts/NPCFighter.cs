@@ -6,8 +6,8 @@ public class NPCFighter : MonoBehaviour
 {
     public string npcName = "Pijany Gladiator";
     public AIDifficulty difficulty = AIDifficulty.Medium;
-    public int maxHp = 120;
-    public int hp = 120;
+    public int maxHp = 220;
+    public int hp = 220;
     public bool isHostile = false;
     public bool isDead = false;
     public bool isBlocking = false;
@@ -17,22 +17,20 @@ public class NPCFighter : MonoBehaviour
     private Transform playerTransform;
     private PlayerCombatAndInteract playerCombat;
 
-    private float moveSpeed = 3.2f;
-    private int attackDamage = 15;
-    private float attackCooldown = 1.6f;
-    private float blockChance = 0.35f;
-
+    private float moveSpeed = 3.4f;
+    private int attackDamage = 18;
+    private float attackCooldown = 1.8f;
     private float actionTimer = 0f;
-    private float blockTimer = 0f;
-    private float swingTimer = 0f;
-    private bool isSwinging = false;
-    private float strafeDir = 1f;
-    private float strafeTimer = 0f;
+    private float stunTimer = 0f;
+
+    /* Czerwona strefa Telegraphingu (jak skillshot Bossa w LoL-u) */
+    private bool isChargingAoE = false;
+    private float aoeChargeTimer = 0f;
+    private GameObject redZoneTelegraph;
 
     private GameObject hpBarRoot;
     private Transform hpFillBar;
     private TextMesh hpTextMesh;
-    private Quaternion startWeaponRot;
 
     private void Start()
     {
@@ -43,26 +41,23 @@ public class NPCFighter : MonoBehaviour
             playerTransform = p.transform;
             playerCombat = p.GetComponent<PlayerCombatAndInteract>();
         }
-        if (weaponPivot != null) startWeaponRot = weaponPivot.localRotation;
-
-        SetDifficulty(difficulty);
         CreateOverheadHealthBar();
     }
 
     public void SetDifficulty(AIDifficulty diff)
     {
         difficulty = diff;
-        if (diff == AIDifficulty.Easy)
+    }
+
+    public void ApplyStun(float duration)
+    {
+        if (isDead) return;
+        stunTimer = duration;
+        isBlocking = false;
+        if (isChargingAoE)
         {
-            maxHp = 100; hp = 100; moveSpeed = 2.4f; attackDamage = 10; attackCooldown = 2.2f; blockChance = 0.15f;
-        }
-        else if (diff == AIDifficulty.Medium)
-        {
-            maxHp = 140; hp = 140; moveSpeed = 3.4f; attackDamage = 18; attackCooldown = 1.5f; blockChance = 0.40f;
-        }
-        else if (diff == AIDifficulty.Hard)
-        {
-            maxHp = 200; hp = 200; moveSpeed = 4.4f; attackDamage = 26; attackCooldown = 1.0f; blockChance = 0.70f;
+            isChargingAoE = false;
+            if (redZoneTelegraph != null) Object.Destroy(redZoneTelegraph);
         }
     }
 
@@ -70,31 +65,19 @@ public class NPCFighter : MonoBehaviour
     {
         hpBarRoot = new GameObject("OverheadHPBar");
         hpBarRoot.transform.SetParent(transform);
-        hpBarRoot.transform.localPosition = new Vector3(0f, 1.45f, 0f);
+        hpBarRoot.transform.localPosition = new Vector3(0f, 1.5f, 0f);
 
         Shader unlit = Shader.Find("Universal Render Pipeline/Unlit");
-        if (unlit == null) unlit = Shader.Find("Unlit/Color");
-
-        GameObject bg = GameObject.CreatePrimitive(PrimitiveType.Quad);
-        bg.name = "HP_BG";
-        bg.transform.SetParent(hpBarRoot.transform);
-        bg.transform.localPosition = Vector3.zero;
-        bg.transform.localScale = new Vector3(1.3f, 0.18f, 1f);
-        Object.Destroy(bg.GetComponent<Collider>());
-        Material bgMat = new Material(unlit);
-        bgMat.color = new Color(0.15f, 0.15f, 0.15f);
-        bgMat.SetColor("_BaseColor", new Color(0.15f, 0.15f, 0.15f));
-        bg.GetComponent<Renderer>().material = bgMat;
+        if (unlit == null) unlit = Shader.Find("Standard");
 
         GameObject fillPivot = new GameObject("FillPivot");
         fillPivot.transform.SetParent(hpBarRoot.transform);
         fillPivot.transform.localPosition = new Vector3(-0.65f, 0f, -0.01f);
 
         GameObject fill = GameObject.CreatePrimitive(PrimitiveType.Quad);
-        fill.name = "HP_Fill";
         fill.transform.SetParent(fillPivot.transform);
         fill.transform.localPosition = new Vector3(0.65f, 0f, 0f);
-        fill.transform.localScale = new Vector3(1.3f, 0.15f, 1f);
+        fill.transform.localScale = new Vector3(1.3f, 0.16f, 1f);
         Object.Destroy(fill.GetComponent<Collider>());
         Material fillMat = new Material(unlit);
         fillMat.color = new Color(0.85f, 0.15f, 0.15f);
@@ -104,7 +87,7 @@ public class NPCFighter : MonoBehaviour
 
         GameObject txtObj = new GameObject("HP_Text");
         txtObj.transform.SetParent(hpBarRoot.transform);
-        txtObj.transform.localPosition = new Vector3(0f, 0.25f, -0.02f);
+        txtObj.transform.localPosition = new Vector3(0f, 0.28f, -0.02f);
         txtObj.transform.localScale = new Vector3(0.08f, 0.08f, 0.08f);
         hpTextMesh = txtObj.AddComponent<TextMesh>();
         hpTextMesh.anchor = TextAnchor.MiddleCenter;
@@ -118,147 +101,97 @@ public class NPCFighter : MonoBehaviour
         if (hpBarRoot != null && Camera.main != null)
         {
             hpBarRoot.transform.rotation = Camera.main.transform.rotation;
-            float ratio = Mathf.Clamp01((float)hp / maxHp);
-            hpFillBar.localScale = new Vector3(ratio, 1f, 1f);
-            hpTextMesh.text = npcName + " (" + difficulty + ")\n" + hp + "/" + maxHp + " HP" + (isBlocking ? " [BLOKUJE!]" : "");
-            hpTextMesh.color = isBlocking ? Color.cyan : Color.white;
+            hpFillBar.localScale = new Vector3(Mathf.Clamp01((float)hp / maxHp), 1f, 1f);
+            string state = stunTimer > 0f ? " [STUN!]" : (isChargingAoE ? " [LADUJE ULT!]" : "");
+            hpTextMesh.text = npcName + "\n" + hp + "/" + maxHp + " HP" + state;
+            hpTextMesh.color = stunTimer > 0f ? Color.yellow : Color.white;
         }
 
         if (isDead || SimplePlayerMovement.isMenuOpen || playerTransform == null) return;
 
-        if (isHostile)
+        if (stunTimer > 0f)
         {
-            RunCombatAI();
+            stunTimer -= Time.deltaTime;
+            return;
         }
 
-        AnimateNPCWeapon();
-    }
+        if (!isHostile) return;
 
-    private void RunCombatAI()
-    {
+        if (isChargingAoE)
+        {
+            aoeChargeTimer -= Time.deltaTime;
+            if (aoeChargeTimer <= 0f)
+            {
+                isChargingAoE = false;
+                if (redZoneTelegraph != null)
+                {
+                    if (Vector3.Distance(playerTransform.position, redZoneTelegraph.transform.position) <= 3.6f && playerCombat != null)
+                    {
+                        playerCombat.TakePlayerDamage(40);
+                    }
+                    Object.Destroy(redZoneTelegraph);
+                }
+            }
+            return;
+        }
+
         Vector3 lookPos = new Vector3(playerTransform.position.x, transform.position.y, playerTransform.position.z);
         transform.LookAt(lookPos);
-
         float dist = Vector3.Distance(transform.position, lookPos);
 
-        if (blockTimer > 0f)
+        if (dist > 2.4f)
         {
-            blockTimer -= Time.deltaTime;
-            isBlocking = true;
+            transform.position = Vector3.MoveTowards(transform.position, lookPos, moveSpeed * Time.deltaTime);
         }
         else
         {
-            isBlocking = false;
-        }
-
-        if (dist > 2.3f && !isSwinging)
-        {
-            float spd = isBlocking ? moveSpeed * 0.5f : moveSpeed;
-            transform.position = Vector3.MoveTowards(transform.position, lookPos, spd * Time.deltaTime);
-        }
-        else if (dist <= 2.3f)
-        {
-            strafeTimer -= Time.deltaTime;
-            if (strafeTimer <= 0f)
-            {
-                strafeDir = Random.value > 0.5f ? 1f : -1f;
-                strafeTimer = Random.Range(1.0f, 2.5f);
-            }
-            transform.position += transform.right * strafeDir * (moveSpeed * 0.45f) * Time.deltaTime;
-
             actionTimer -= Time.deltaTime;
-            if (actionTimer <= 0f && !isBlocking && !isSwinging)
+            if (actionTimer <= 0f)
             {
-                if (Random.value < 0.25f)
+                if (Random.value < 0.45f)
                 {
-                    blockTimer = Random.Range(0.8f, 1.5f);
-                    actionTimer = 1.0f;
+                    StartBossRedZoneSkill();
                 }
-                else
-                {
-                    StartNPCAttack();
-                }
-            }
-        }
-    }
-
-    public void OnPlayerAttackedNotice()
-    {
-        if (isDead || isSwinging) return;
-        if (Random.value <= blockChance)
-        {
-            isBlocking = true;
-            blockTimer = 0.7f;
-        }
-    }
-
-    private void StartNPCAttack()
-    {
-        isSwinging = true;
-        swingTimer = 0f;
-        actionTimer = attackCooldown;
-    }
-
-    private void AnimateNPCWeapon()
-    {
-        if (weaponPivot == null) return;
-
-        if (isSwinging)
-        {
-            swingTimer += Time.deltaTime * 6f;
-            float angle = Mathf.Sin(swingTimer * Mathf.PI) * 75f;
-            weaponPivot.localRotation = startWeaponRot * Quaternion.Euler(angle, 0f, 0f);
-
-            if (swingTimer >= 0.5f && swingTimer - Time.deltaTime * 6f < 0.5f)
-            {
-                if (Vector3.Distance(transform.position, playerTransform.position) <= 2.9f && playerCombat != null)
+                else if (playerCombat != null)
                 {
                     playerCombat.TakePlayerDamage(attackDamage);
                 }
+                actionTimer = attackCooldown;
             }
-
-            if (swingTimer >= 1f)
-            {
-                isSwinging = false;
-                weaponPivot.localRotation = startWeaponRot;
-            }
-        }
-        else if (isBlocking)
-        {
-            Quaternion blk = Quaternion.Euler(0f, -45f, 65f);
-            weaponPivot.localRotation = Quaternion.Lerp(weaponPivot.localRotation, blk, Time.deltaTime * 12f);
-        }
-        else
-        {
-            weaponPivot.localRotation = Quaternion.Lerp(weaponPivot.localRotation, startWeaponRot, Time.deltaTime * 10f);
         }
     }
+
+    private void StartBossRedZoneSkill()
+    {
+        isChargingAoE = true;
+        aoeChargeTimer = 1.25f;
+        redZoneTelegraph = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+        redZoneTelegraph.transform.position = new Vector3(playerTransform.position.x, 0.08f, playerTransform.position.z);
+        redZoneTelegraph.transform.localScale = new Vector3(6.5f, 0.05f, 6.5f);
+        Object.Destroy(redZoneTelegraph.GetComponent<Collider>());
+
+        Shader s = Shader.Find("Universal Render Pipeline/Unlit");
+        if (s == null) s = Shader.Find("Standard");
+        Material m = new Material(s);
+        m.color = new Color(0.95f, 0.1f, 0.1f);
+        m.SetColor("_BaseColor", new Color(0.95f, 0.1f, 0.1f));
+        redZoneTelegraph.GetComponent<Renderer>().material = m;
+    }
+
+    public void OnPlayerAttackedNotice() { }
 
     public void TakeDamage(int dmg, PlayerCombatAndInteract player)
     {
         if (isDead) return;
         isHostile = true;
-
-        if (isBlocking)
-        {
-            dmg = Mathf.Max(1, Mathf.RoundToInt(dmg * 0.2f));
-            if (rend != null) rend.material.color = Color.cyan;
-        }
-        else
-        {
-            if (rend != null) rend.material.color = new Color(0.9f, 0.2f, 0.2f);
-            transform.position += (transform.position - player.transform.position).normalized * 0.25f;
-        }
-
         hp -= dmg;
 
         if (hp <= 0)
         {
             hp = 0;
             isDead = true;
-            isBlocking = false;
+            if (redZoneTelegraph != null) Object.Destroy(redZoneTelegraph);
             player.AddStat(StatType.Strength, 2);
-            player.AddStat(StatType.Stamina, 1);
             player.AddStat(StatType.Finesse, 1);
             if (rend != null) rend.material.color = Color.gray;
             transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
