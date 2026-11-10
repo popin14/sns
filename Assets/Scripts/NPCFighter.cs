@@ -193,9 +193,15 @@ public class NPCFighter : MonoBehaviour
             if (redZoneTelegraph != null) Object.Destroy(redZoneTelegraph);
             player.AddStat(StatType.Strength, 2);
             player.AddStat(StatType.Finesse, 1);
+            PlayerInventory inv = player.GetComponent<PlayerInventory>();
+            if (inv != null)
+            {
+                inv.AddItemToBackpack(new EquipmentItem("Sandaly Pijanego Gladiatora", EquipSlot.Boots, 5, 1, 1, 3, true));
+            }
             if (rend != null) rend.material.color = Color.gray;
             transform.localRotation = Quaternion.Euler(90f, 0f, 0f);
             transform.position = new Vector3(transform.position.x, 0.5f, transform.position.z);
         }
     }
 }
+

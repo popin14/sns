@@ -9,9 +9,17 @@ public class PlayerCombatAndInteract : MonoBehaviour
     public float attackRange = 3.2f;
     public int baseDamage = 18;
 
-    [Header("Player Health")]
+    [Header("Player Resources (HP, Stamina, Mana)")]
     public int maxHp = 120;
     public int currentHp = 120;
+
+    public float maxStamina = 100f;
+    public float currentStamina = 100f;
+    public float staminaRegenRate = 16f;
+
+    public float maxMana = 100f;
+    public float currentMana = 100f;
+    public float manaRegenRate = 8f;
 
     [Header("Permanent Stats")]
     public int strength = 1;
@@ -29,11 +37,11 @@ public class PlayerCombatAndInteract : MonoBehaviour
     public int unspentFinesse = 0;
     public int unspentCharisma = 0;
 
-    [Header("MOBA Cooldowns (1, 2, 3, 4)")]
-    public float cdSkill1 = 4f;
-    public float cdSkill2 = 5f;
-    public float cdSkill3 = 8f;
-    public float cdSkill4 = 12f;
+    [Header("MOBA Cooldowns (1=Dash, 2=Przebicie, 3=Stun, 4=Ult)")]
+    public float cdSkill1 = 3.5f;
+    public float cdSkill2 = 4.0f;
+    public float cdSkill3 = 8.0f;
+    public float cdSkill4 = 12.0f;
 
     private float timerSkill1 = 0f;
     private float timerSkill2 = 0f;
@@ -49,6 +57,7 @@ public class PlayerCombatAndInteract : MonoBehaviour
     private Quaternion startRot;
     private Vector3 startPos;
     private CharacterController charController;
+    private SimplePlayerMovement movement;
     private Vector3 dashVelocity = Vector3.zero;
     private float dashTimer = 0f;
 
@@ -57,19 +66,41 @@ public class PlayerCombatAndInteract : MonoBehaviour
     private GrandmaBoss activeGrandma = null;
     private GrandmaBoss hoveredGrandma = null;
 
-    private int dialogueStage = 0;
     private string combatFloatingText = "";
     private float floatingTextTimer = 0f;
+
+    private Texture2D barBgTex;
+    private Texture2D hpFillTex;
+    private Texture2D stamFillTex;
+    private Texture2D manaFillTex;
 
     private void Start()
     {
         charController = GetComponent<CharacterController>();
+        movement = GetComponent<SimplePlayerMovement>();
         if (swordPivot != null)
         {
             startRot = swordPivot.localRotation;
             startPos = swordPivot.localPosition;
         }
+
+        barBgTex = MakeTex(new Color(0.12f, 0.12f, 0.15f, 0.9f));
+        hpFillTex = MakeTex(new Color(0.85f, 0.18f, 0.18f, 1f));
+        stamFillTex = MakeTex(new Color(0.20f, 0.78f, 0.25f, 1f));
+        manaFillTex = MakeTex(new Color(0.18f, 0.45f, 0.92f, 1f));
+
         RecalculateStats();
+        currentHp = maxHp;
+        currentStamina = maxStamina;
+        currentMana = maxMana;
+    }
+
+    private Texture2D MakeTex(Color col)
+    {
+        Texture2D t = new Texture2D(1, 1);
+        t.SetPixel(0, 0, col);
+        t.Apply();
+        return t;
     }
 
     public void AddStat(StatType stat, int amount)
@@ -77,18 +108,51 @@ public class PlayerCombatAndInteract : MonoBehaviour
         switch (stat)
         {
             case StatType.Strength: strength += amount; unspentStrength += amount; break;
-            case StatType.Stamina: stamina += amount; unspentStamina += amount; RecalculateStats(); break;
+            case StatType.Stamina:
+                stamina += amount;
+                unspentStamina += amount;
+                RecalculateStats();
+                currentHp += amount * 20;
+                currentStamina += amount * 25f;
+                break;
             case StatType.Intelligence: intelligence += amount; unspentIntelligence += amount; break;
-            case StatType.Knowledge: knowledge += amount; unspentKnowledge += amount; break;
+            case StatType.Knowledge:
+                knowledge += amount;
+                unspentKnowledge += amount;
+                RecalculateStats();
+                currentMana += amount * 30f;
+                break;
             case StatType.Finesse: finesse += amount; unspentFinesse += amount; break;
             case StatType.Charisma: charisma += amount; unspentCharisma += amount; break;
         }
+        RecalculateStats();
     }
 
-    private void RecalculateStats()
+    public void RecalculateStats()
     {
         maxHp = 100 + (stamina * 20);
+        maxStamina = 75f + (stamina * 25f);
+        maxMana = 70f + (knowledge * 30f);
+
         if (currentHp > maxHp) currentHp = maxHp;
+        if (currentStamina > maxStamina) currentStamina = maxStamina;
+        if (currentMana > maxMana) currentMana = maxMana;
+    }
+
+    public void UseStamina(float amount)
+    {
+        currentStamina = Mathf.Max(0f, currentStamina - amount);
+    }
+
+    public bool TryUseMana(float amount)
+    {
+        if (currentMana < amount)
+        {
+            ShowCombatText("BRAK MANY! (Potrzebujesz " + Mathf.RoundToInt(amount) + " Many)");
+            return false;
+        }
+        currentMana -= amount;
+        return true;
     }
 
     public void ShowCombatText(string txt)
@@ -101,7 +165,7 @@ public class PlayerCombatAndInteract : MonoBehaviour
     {
         playerStunTimer = duration;
         isBlocking = false;
-        ShowCombatText("JESTES OGLUSZONY PRZEZ BABCIE! (" + duration.ToString("F1") + "s)");
+        ShowCombatText("JESTES OGLUSZONY! (" + duration.ToString("F1") + "s)");
     }
 
     public void TakePlayerDamage(int dmg)
@@ -116,6 +180,9 @@ public class PlayerCombatAndInteract : MonoBehaviour
             dmg = Mathf.Max(1, Mathf.RoundToInt(dmg * 0.25f));
             ShowCombatText("ZABLOKOWANO! (-" + dmg + " HP)");
         }
+        PlayerInventory inv = GetComponent<PlayerInventory>();
+        if (inv != null) dmg = Mathf.Max(1, dmg - inv.GetTotalArmor());
+
         currentHp -= dmg;
         if (currentHp <= 0)
         {
@@ -125,14 +192,19 @@ public class PlayerCombatAndInteract : MonoBehaviour
 
     private void RespawnPlayer()
     {
+        RecalculateStats();
         currentHp = maxHp;
+        currentStamina = maxStamina;
+        currentMana = maxMana;
         playerStunTimer = 0f;
+
         if (charController != null) charController.enabled = false;
-        transform.position = new Vector3(0f, 1.5f, -6f);
+        GameObject hosp = GameObject.Find("HospitalSpawnPoint");
+        transform.position = hosp != null ? hosp.transform.position : new Vector3(-10.5f, 1.5f, 6f);
         transform.rotation = Quaternion.identity;
         if (charController != null) charController.enabled = true;
 
-        ShowCombatText("ZGINALES! Odrodzono na spawnie (Babcia siedzi na lawce).");
+        ShowCombatText("ZGINALES! Odrodzono w Szpitalu.");
 
         GrandmaBoss[] grandmas = Object.FindObjectsByType<GrandmaBoss>(FindObjectsSortMode.None);
         foreach (var g in grandmas)
@@ -143,11 +215,24 @@ public class PlayerCombatAndInteract : MonoBehaviour
 
     private void Update()
     {
+        RecalculateStats();
+
         if (timerSkill1 > 0f) timerSkill1 -= Time.deltaTime;
         if (timerSkill2 > 0f) timerSkill2 -= Time.deltaTime;
         if (timerSkill3 > 0f) timerSkill3 -= Time.deltaTime;
         if (timerSkill4 > 0f) timerSkill4 -= Time.deltaTime;
         if (floatingTextTimer > 0f) floatingTextTimer -= Time.deltaTime;
+
+        /* Regeneracja Staminy (gdy nie sprincisz) oraz Many (skalowana z Knowledge) */
+        bool sprinting = (movement != null && movement.isSprinting);
+        if (!sprinting && dashTimer <= 0f && currentStamina < maxStamina)
+        {
+            currentStamina = Mathf.Min(maxStamina, currentStamina + (staminaRegenRate + stamina * 2f) * Time.deltaTime);
+        }
+        if (currentMana < maxMana)
+        {
+            currentMana = Mathf.Min(maxMana, currentMana + (manaRegenRate + knowledge * 2.5f) * Time.deltaTime);
+        }
 
         if (playerStunTimer > 0f)
         {
@@ -180,14 +265,12 @@ public class PlayerCombatAndInteract : MonoBehaviour
             {
                 activeNPC = hoveredNPC;
                 activeGrandma = null;
-                dialogueStage = 0;
                 SimplePlayerMovement.isMenuOpen = true;
             }
             else if (hoveredGrandma != null && !hoveredGrandma.isHostile && !hoveredGrandma.isDead)
             {
                 activeGrandma = hoveredGrandma;
                 activeNPC = null;
-                dialogueStage = 0;
                 SimplePlayerMovement.isMenuOpen = true;
             }
         }
@@ -210,61 +293,76 @@ public class PlayerCombatAndInteract : MonoBehaviour
             }
 
             if (hoveredNPC != null && !hoveredNPC.isDead && Vector3.Distance(transform.position, hoveredNPC.transform.position) <= attackRange)
-            {
                 hoveredNPC.TakeDamage(totalDmg, this);
-            }
             if (hoveredGrandma != null && !hoveredGrandma.isDead && Vector3.Distance(transform.position, hoveredGrandma.transform.position) <= attackRange)
-            {
                 hoveredGrandma.TakeDamage(totalDmg, this);
-            }
         }
 
-        /* SKILL 1 [Klawisz 1]: Przebijajacy Skillshot */
+        /* SKILL 1 [Klawisz 1]: DASH (Koszt: 40% Maksymalnej Staminy) */
         if (Keyboard.current != null && Keyboard.current.digit1Key.wasPressedThisFrame && timerSkill1 <= 0f)
         {
-            timerSkill1 = Mathf.Max(1.5f, cdSkill1 - (finesse * 0.2f));
-            TriggerSwordSwing();
-            SpawnSkillVisual(transform.position + transform.forward * 2.5f, new Vector3(1.2f, 0.2f, 4.5f), new Color(1f, 0.5f, 0.1f));
+            float dashStaminaCost = maxStamina * 0.40f;
+            if (currentStamina >= dashStaminaCost)
+            {
+                currentStamina -= dashStaminaCost;
+                timerSkill1 = Mathf.Max(1.0f, cdSkill1 - (finesse * 0.2f));
 
-            int qDmg = 32 + (strength * 8);
-            DamageEnemiesInRadius(5.5f, qDmg, 0f);
-            ShowCombatText("[1] PRZEBIJAJACE OSTRZE! (" + qDmg + " DMG)");
+                Vector3 dir = transform.forward;
+                if (Keyboard.current.sKey.isPressed) dir = -transform.forward;
+                else if (Keyboard.current.aKey.isPressed) dir = -transform.right;
+                else if (Keyboard.current.dKey.isPressed) dir = transform.right;
+
+                dashVelocity = dir.normalized * 18f;
+                dashTimer = 0.22f;
+                ShowCombatText("[1] DASH! (-40% Staminy)");
+            }
+            else
+            {
+                ShowCombatText("ZA MALO STAMINY NA DASH! (Wymagane 40%: " + Mathf.RoundToInt(dashStaminaCost) + ")");
+            }
         }
 
-        /* SKILL 2 [Klawisz 2]: Dash */
+        /* SKILL 2 [Klawisz 2]: PRZEBIJAJACE OSTRZE (Koszt: 20 Many) */
         if (Keyboard.current != null && Keyboard.current.digit2Key.wasPressedThisFrame && timerSkill2 <= 0f)
         {
-            timerSkill2 = Mathf.Max(2.0f, cdSkill2 - (finesse * 0.25f));
-            Vector3 dir = transform.forward;
-            if (Keyboard.current.sKey.isPressed) dir = -transform.forward;
-            else if (Keyboard.current.aKey.isPressed) dir = -transform.right;
-            else if (Keyboard.current.dKey.isPressed) dir = transform.right;
+            if (TryUseMana(20f))
+            {
+                timerSkill2 = Mathf.Max(1.5f, cdSkill2 - (finesse * 0.2f));
+                TriggerSwordSwing();
+                SpawnSkillVisual(transform.position + transform.forward * 2.5f, new Vector3(1.2f, 0.2f, 4.5f), new Color(1f, 0.5f, 0.1f));
 
-            dashVelocity = dir.normalized * 18f;
-            dashTimer = 0.22f;
-            ShowCombatText("[2] DASH!");
+                int qDmg = 32 + (strength * 8);
+                DamageEnemiesInRadius(5.5f, qDmg, 0f);
+                ShowCombatText("[2] PRZEBIJAJACE OSTRZE! (" + qDmg + " DMG)");
+            }
         }
 
-        /* SKILL 3 [Klawisz 3]: Stun CC */
+        /* SKILL 3 [Klawisz 3]: STUN CC (Koszt: 30 Many) */
         if (Keyboard.current != null && Keyboard.current.digit3Key.wasPressedThisFrame && timerSkill3 <= 0f)
         {
-            timerSkill3 = cdSkill3;
-            SpawnSkillVisual(transform.position + transform.forward * 1.8f, new Vector3(2.5f, 0.3f, 2.5f), Color.cyan);
-            DamageEnemiesInRadius(4.0f, 15 + (stamina * 4), 1.6f + (charisma * 0.2f));
-            ShowCombatText("[3] OGLUSZENIE (STUN)!");
+            if (TryUseMana(30f))
+            {
+                timerSkill3 = cdSkill3;
+                SpawnSkillVisual(transform.position + transform.forward * 1.8f, new Vector3(2.5f, 0.3f, 2.5f), Color.cyan);
+                DamageEnemiesInRadius(4.0f, 15 + (stamina * 4), 1.6f + (charisma * 0.2f));
+                ShowCombatText("[3] OGLUSZENIE (STUN)!");
+            }
         }
 
-        /* SKILL 4 [Klawisz 4]: Ultimate AoE */
+        /* SKILL 4 [Klawisz 4]: ULTIMATE AoE (Koszt: 50 Many) */
         if (Keyboard.current != null && Keyboard.current.digit4Key.wasPressedThisFrame && timerSkill4 <= 0f)
         {
-            timerSkill4 = Mathf.Max(5f, cdSkill4 - (intelligence * 0.5f));
-            TriggerSwordSwing();
-            Vector3 strikePos = transform.position + transform.forward * 3.2f;
-            SpawnSkillVisual(new Vector3(strikePos.x, 0.15f, strikePos.z), new Vector3(4.5f, 0.4f, 4.5f), new Color(0.95f, 0.15f, 0.2f));
+            if (TryUseMana(50f))
+            {
+                timerSkill4 = Mathf.Max(5f, cdSkill4 - (intelligence * 0.5f));
+                TriggerSwordSwing();
+                Vector3 strikePos = transform.position + transform.forward * 3.2f;
+                SpawnSkillVisual(new Vector3(strikePos.x, 0.15f, strikePos.z), new Vector3(4.5f, 0.4f, 4.5f), new Color(0.95f, 0.15f, 0.2f));
 
-            int ultDmg = 55 + (strength * 8) + (intelligence * 8);
-            DamageEnemiesInRadius(6.5f, ultDmg, 0f);
-            ShowCombatText("[4] ULTIMATE: WYROK ARENY! (" + ultDmg + " DMG!)");
+                int ultDmg = 55 + (strength * 8) + (intelligence * 8);
+                DamageEnemiesInRadius(6.5f, ultDmg, 0f);
+                ShowCombatText("[4] ULTIMATE: WYROK ARENY! (" + ultDmg + " DMG!)");
+            }
         }
 
         AnimatePlayerSword();
@@ -344,30 +442,50 @@ public class PlayerCombatAndInteract : MonoBehaviour
         }
     }
 
+    private void DrawResourceBar(Rect rect, float current, float max, Texture2D fillTex, string label)
+    {
+        if (barBgTex != null) GUI.DrawTexture(rect, barBgTex);
+        float ratio = Mathf.Clamp01(current / Mathf.Max(1f, max));
+        Rect fillRect = new Rect(rect.x + 2, rect.y + 2, (rect.width - 4) * ratio, rect.height - 4);
+        if (fillTex != null) GUI.DrawTexture(fillRect, fillTex);
+
+        GUIStyle centered = new GUIStyle(GUI.skin.label);
+        centered.alignment = TextAnchor.MiddleCenter;
+        centered.fontStyle = FontStyle.Bold;
+        centered.normal.textColor = Color.white;
+        GUI.Label(rect, label, centered);
+    }
+
     private void OnGUI()
     {
         GUI.skin.box.fontSize = 13;
         GUI.skin.button.fontSize = 13;
-        GUI.skin.label.fontSize = 14;
+        GUI.skin.label.fontSize = 13;
 
-        GUILayout.BeginArea(new Rect(15, 15, 305, 220), GUI.skin.box);
-        string stunTxt = playerStunTimer > 0f ? " [STUN!]" : "";
-        GUILayout.Label("<b>HP: " + currentHp + " / " + maxHp + stunTxt + " | Pasywka: " + passiveStacks + "/3</b>");
+        /* 1. WIDOCZNE PASKI: HEALTH BAR, STAMINA BAR, MANA BAR */
+        DrawResourceBar(new Rect(15, 15, 290, 26), currentHp, maxHp, hpFillTex, "HP: " + currentHp + " / " + maxHp + (playerStunTimer > 0f ? " [STUN!]" : ""));
+        DrawResourceBar(new Rect(15, 46, 290, 24), currentStamina, maxStamina, stamFillTex, "STAMINA: " + Mathf.RoundToInt(currentStamina) + " / " + Mathf.RoundToInt(maxStamina) + " [Shift=Bieg]");
+        DrawResourceBar(new Rect(15, 75, 290, 24), currentMana, maxMana, manaFillTex, "MANA: " + Mathf.RoundToInt(currentMana) + " / " + Mathf.RoundToInt(maxMana));
+
+        /* 2. PANEL STATYSTYK PONIZEJ PASKOW */
+        GUILayout.BeginArea(new Rect(15, 106, 290, 175), GUI.skin.box);
+        GUILayout.Label("<b>STATYSTYKI (Pasywka: " + passiveStacks + "/3):</b>");
         GUILayout.Label("Strength: " + strength + " (+" + unspentStrength + ")");
-        GUILayout.Label("Stamina: " + stamina + " (+" + unspentStamina + ")");
+        GUILayout.Label("Stamina: " + stamina + " (+" + unspentStamina + ") -> Max Stamina/HP");
         GUILayout.Label("Intelligence: " + intelligence + " (+" + unspentIntelligence + ")");
-        GUILayout.Label("Knowledge: " + knowledge + " (+" + unspentKnowledge + ")");
+        GUILayout.Label("Knowledge: " + knowledge + " (+" + unspentKnowledge + ") -> Max Mana");
         GUILayout.Label("Finesse: " + finesse + " (+" + unspentFinesse + ")");
         GUILayout.Label("Charisma: " + charisma + " (+" + unspentCharisma + ")");
         GUILayout.EndArea();
 
-        float barW = 540f;
+        /* 3. DOLNY PASEK SKILLI ([1] = Dash 40% Staminy, [2] = Przebicie) */
+        float barW = 580f;
         GUILayout.BeginArea(new Rect(Screen.width / 2 - barW / 2, Screen.height - 85, barW, 70), GUI.skin.box);
         GUILayout.BeginHorizontal();
-        DrawSkillSlot("[1] Q: Przebicie", timerSkill1);
-        DrawSkillSlot("[2] W: Dash", timerSkill2);
-        DrawSkillSlot("[3] E: Stun CC", timerSkill3);
-        DrawSkillSlot("[4] R: Ultimate", timerSkill4);
+        DrawSkillSlot("[1] Dash (40% Stam)", timerSkill1);
+        DrawSkillSlot("[2] Przebicie (20 MP)", timerSkill2);
+        DrawSkillSlot("[3] Stun CC (30 MP)", timerSkill3);
+        DrawSkillSlot("[4] Ultimate (50 MP)", timerSkill4);
         GUILayout.EndHorizontal();
         GUILayout.EndArea();
 
@@ -383,7 +501,7 @@ public class PlayerCombatAndInteract : MonoBehaviour
             if (hoveredNPC != null && !hoveredNPC.isDead && !hoveredNPC.isHostile)
                 GUI.Box(new Rect(Screen.width / 2 - 180, Screen.height - 130, 360, 30), "[E] Rozmawiaj z: " + hoveredNPC.npcName);
             else if (hoveredGrandma != null && !hoveredGrandma.isDead && !hoveredGrandma.isHostile)
-                GUI.Box(new Rect(Screen.width / 2 - 210, Screen.height - 130, 420, 30), "[E] Porozmawiaj ze Staruszka  |  [LPM] Zaatakuj (Na wlasne ryzyko!)");
+                GUI.Box(new Rect(Screen.width / 2 - 210, Screen.height - 130, 420, 30), "[E] Porozmawiaj ze Staruszka  |  [LPM] Zaatakuj");
         }
 
         if (SimplePlayerMovement.isMenuOpen)
@@ -396,7 +514,7 @@ public class PlayerCombatAndInteract : MonoBehaviour
     private void DrawSkillSlot(string title, float cd)
     {
         string status = cd > 0f ? "\nCD: " + cd.ToString("F1") + "s" : "\n[GOTOWE]";
-        GUILayout.Box("<b>" + title + "</b>" + status, GUILayout.Width(126), GUILayout.Height(55));
+        GUILayout.Box("<b>" + title + "</b>" + status, GUILayout.Width(136), GUILayout.Height(55));
     }
 
     private void DrawGladiatorDialogue()
@@ -405,10 +523,10 @@ public class PlayerCombatAndInteract : MonoBehaviour
         GUILayout.Label("<b>" + activeNPC.npcName + ":</b>");
         GUILayout.Label("\"Sprawdzimy Twoje skille na arenie?! Uwazaj na moje czerwone strefy uderzen!\"");
         GUILayout.Space(12);
-        if (GUILayout.Button("1. [Charisma] Pogadajmy spokojnie przy ognisku (+1 Charisma, +1 Knowledge)", GUILayout.Height(36)))
+        if (GUILayout.Button("1. [Charisma] Pogadajmy spokojnie (+1 Charisma, +2 Knowledge -> +60 Max Many!)", GUILayout.Height(36)))
         {
             AddStat(StatType.Charisma, 1);
-            AddStat(StatType.Knowledge, 1);
+            AddStat(StatType.Knowledge, 2);
             SimplePlayerMovement.isMenuOpen = false;
             activeNPC = null;
         }
@@ -446,14 +564,14 @@ public class PlayerCombatAndInteract : MonoBehaviour
             GUILayout.Label("\"Oj, moje stare plecy... Mlodziencze, pomozesz starej kobiecie przeniesc ten ciezki kosz z drewnem do laweczki?\"");
             GUILayout.Space(15);
 
-            if (GUILayout.Button("1. [Pomoc] 'Oczywiscie babciu, juz niose!' (+2 Charisma, +1 Stamina)", GUILayout.Height(38)))
+            if (GUILayout.Button("1. [Pomoc] 'Oczywiscie babciu, juz niose!' (+2 Stamina -> +50 Max Staminy, +1 Knowledge)", GUILayout.Height(38)))
             {
-                AddStat(StatType.Charisma, 2);
-                AddStat(StatType.Stamina, 1);
+                AddStat(StatType.Stamina, 2);
+                AddStat(StatType.Knowledge, 1);
                 activeGrandma.SitOnBenchPeacefully();
                 SimplePlayerMovement.isMenuOpen = false;
                 activeGrandma = null;
-                ShowCombatText("Pomogles Staruszce! (+2 Charisma, +1 Stamina)");
+                ShowCombatText("Pomogles Staruszce! (+2 Stamina, +1 Knowledge)");
             }
             GUILayout.Space(6);
             if (GUILayout.Button("2. [Zaatakuj] 'Dawaj emeryture staruszko!' (AKTYWUJE UKRYTEGO BOSSA)", GUILayout.Height(38)))

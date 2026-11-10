@@ -6,19 +6,36 @@ public class SimplePlayerMovement : MonoBehaviour
 {
     public static bool isMenuOpen = false;
     public float walkSpeed = 6f;
+    public float sprintSpeed = 10.5f;
+    public float crouchSpeed = 3.2f;
+    public float sprintStaminaDrain = 22f;
     public float mouseSensitivity = 0.15f;
     public float jumpHeight = 1.6f;
     public float gravity = -19.62f;
     public Transform cameraTransform;
 
+    [Header("Crouch Settings (Left Ctrl)")]
+    public float standingHeight = 2.0f;
+    public float crouchingHeight = 1.1f;
+    public float standingCamY = 0.6f;
+    public float crouchingCamY = 0.15f;
+
+    [HideInInspector] public bool isSprinting = false;
+    [HideInInspector] public bool isCrouching = false;
+
     private CharacterController controller;
+    private PlayerInventory inventory;
+    private PlayerCombatAndInteract combat;
     private float verticalVelocity;
     private float xRotation = 0f;
     private float groundedTimer = 0f;
+    private int airJumpCount = 0;
 
     private void Start()
     {
         controller = GetComponent<CharacterController>();
+        inventory = GetComponent<PlayerInventory>();
+        combat = GetComponent<PlayerCombatAndInteract>();
         controller.minMoveDistance = 0f;
         Cursor.lockState = CursorLockMode.Locked;
         Cursor.visible = false;
@@ -32,6 +49,7 @@ public class SimplePlayerMovement : MonoBehaviour
         {
             Cursor.lockState = CursorLockMode.None;
             Cursor.visible = true;
+            isSprinting = false;
             return;
         }
         else
@@ -57,12 +75,53 @@ public class SimplePlayerMovement : MonoBehaviour
             if (Keyboard.current.aKey.isPressed) moveInput.x -= 1f;
         }
 
-        Vector3 move = (transform.right * moveInput.x + transform.forward * moveInput.y).normalized * walkSpeed;
+        /* Obsluga kucania na Left Ctrl (oraz Right Ctrl) */
+        bool wantsToCrouch = Keyboard.current != null && (Keyboard.current.leftCtrlKey.isPressed || Keyboard.current.rightCtrlKey.isPressed);
+        if (wantsToCrouch)
+        {
+            isCrouching = true;
+        }
+        else if (isCrouching)
+        {
+            /* Sprawdz czy nad glowa nie ma niskiego sufitu przed wstaniem */
+            bool ceilingBlocked = Physics.Raycast(transform.position, Vector3.up, 1.1f);
+            if (!ceilingBlocked) isCrouching = false;
+        }
 
-        bool hitGround = controller.isGrounded || Physics.Raycast(transform.position, Vector3.down, 1.15f);
+        /* Plynna zmiana wysokosci kapsuly i kamery */
+        float targetHeight = isCrouching ? crouchingHeight : standingHeight;
+        float prevHeight = controller.height;
+        controller.height = Mathf.Lerp(controller.height, targetHeight, Time.deltaTime * 12f);
+        transform.position += new Vector3(0f, (controller.height - prevHeight) * 0.5f, 0f);
+
+        if (cameraTransform != null)
+        {
+            float targetCamY = isCrouching ? crouchingCamY : standingCamY;
+            Vector3 camPos = cameraTransform.localPosition;
+            camPos.y = Mathf.Lerp(camPos.y, targetCamY, Time.deltaTime * 12f);
+            cameraTransform.localPosition = camPos;
+        }
+
+        /* Predkosc ruchu: Kucanie vs Sprint vs Chodzenie */
+        bool wantsToSprint = !isCrouching && Keyboard.current != null && Keyboard.current.leftShiftKey.isPressed && moveInput.sqrMagnitude > 0.01f;
+        isSprinting = false;
+        float currentSpeed = isCrouching ? crouchSpeed : walkSpeed;
+
+        if (wantsToSprint && combat != null && combat.currentStamina > 1f)
+        {
+            isSprinting = true;
+            currentSpeed = sprintSpeed;
+            combat.UseStamina(sprintStaminaDrain * Time.deltaTime);
+        }
+
+        Vector3 move = (transform.right * moveInput.x + transform.forward * moveInput.y).normalized * currentSpeed;
+
+        float groundRayDist = (controller.height * 0.5f) + 0.2f;
+        bool hitGround = controller.isGrounded || Physics.Raycast(transform.position, Vector3.down, groundRayDist);
         if (hitGround)
         {
             groundedTimer = 0.2f;
+            airJumpCount = 0;
             if (verticalVelocity < 0f) verticalVelocity = -2f;
         }
         else
@@ -70,10 +129,20 @@ public class SimplePlayerMovement : MonoBehaviour
             groundedTimer -= Time.deltaTime;
         }
 
-        if (Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame && groundedTimer > 0f)
+        if (Keyboard.current != null && Keyboard.current.spaceKey.wasPressedThisFrame)
         {
-            verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
-            groundedTimer = 0f;
+            if (groundedTimer > 0f)
+            {
+                isCrouching = false;
+                verticalVelocity = Mathf.Sqrt(jumpHeight * -2f * gravity);
+                groundedTimer = 0f;
+            }
+            else if (inventory != null && inventory.CanDoubleJump() && airJumpCount < 1)
+            {
+                verticalVelocity = Mathf.Sqrt((jumpHeight * 1.15f) * -2f * gravity);
+                airJumpCount++;
+                if (combat != null) combat.ShowCombatText("DOUBLE JUMP! (Sandaly Pijaka)");
+            }
         }
 
         verticalVelocity += gravity * Time.deltaTime;
